@@ -1,0 +1,15 @@
+name: Feature request
+description: Describe a learning problem and the smallest useful change.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to learn or do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and how we could verify it
+    validations:
+      required: true

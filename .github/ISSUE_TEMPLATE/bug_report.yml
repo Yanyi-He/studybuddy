@@ -1,0 +1,23 @@
+name: Bug report
+description: Report a reproducible problem using synthetic notes.
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Include commands and a small synthetic Markdown example. Remove private paths and notes.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      placeholder: StudyBuddy version, Python version, OS, SQLite version
+    validations:
+      required: true
