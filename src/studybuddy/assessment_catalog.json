@@ -1,0 +1,266 @@
+{
+  "catalog_version": 1,
+  "items": [
+    {
+      "id": "retry-recall",
+      "topic": "retry-safety",
+      "kind": "recall",
+      "context": "definition",
+      "prompt": "Recall the limits of timeout and retry behavior. / 回忆超时与重试的边界。",
+      "questions": {
+        "timeout": {
+          "prompt": "After a client timeout, what is known about the server side effect?",
+          "choices": {
+            "unknown": "It may or may not have committed.",
+            "absent": "It definitely did not happen."
+          }
+        },
+        "identity": {
+          "prompt": "Which identity should a logical operation keep across retries?",
+          "choices": {
+            "stable": "The same operation key.",
+            "new": "A new random operation key each time."
+          }
+        }
+      },
+      "expected": {
+        "timeout": "unknown",
+        "identity": "stable"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    },
+    {
+      "id": "retry-application",
+      "topic": "retry-safety",
+      "kind": "application",
+      "context": "http-payment",
+      "prompt": "A payment client retries after a timeout. Choose a design for one logical charge.",
+      "questions": {
+        "key": {
+          "prompt": "Which key should the retry use?",
+          "choices": {
+            "same": "The original charge operation key.",
+            "new": "A fresh key for each HTTP request."
+          }
+        },
+        "commit": {
+          "prompt": "How should deduplication relate to the charge?",
+          "choices": {
+            "atomic": "Coordinate the key record and charge atomically.",
+            "after": "Write a key record later without coordinating failures."
+          }
+        }
+      },
+      "expected": {
+        "key": "same",
+        "commit": "atomic"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    },
+    {
+      "id": "retry-transfer",
+      "topic": "retry-safety",
+      "kind": "transfer",
+      "context": "queue-consumer",
+      "prompt": "Transfer retry reasoning to a queue that may redeliver jobs.",
+      "questions": {
+        "key": {
+          "prompt": "Which deduplication identity survives redelivery?",
+          "choices": {
+            "job": "A stable logical job ID.",
+            "worker": "The current worker process ID."
+          }
+        },
+        "failure": {
+          "prompt": "What can happen if the effect commits before acknowledgement?",
+          "choices": {
+            "duplicate": "The job may be redelivered and repeat the effect.",
+            "never": "Acknowledgement is guaranteed, so no duplicate can happen."
+          }
+        }
+      },
+      "expected": {
+        "key": "job",
+        "failure": "duplicate"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    },
+    {
+      "id": "isolation-recall",
+      "topic": "transaction-isolation",
+      "kind": "recall",
+      "context": "definition",
+      "prompt": "Distinguish a dirty read from a committed observation.",
+      "questions": {
+        "dirty": {
+          "prompt": "Which observation is a dirty read?",
+          "choices": {
+            "uncommitted": "Reading another transaction's uncommitted write.",
+            "committed": "Reading only a committed value."
+          }
+        },
+        "rollback": {
+          "prompt": "If the writer rolls back, what happens to its uncommitted value?",
+          "choices": {
+            "discarded": "It is not a committed database value.",
+            "committed": "Every reader automatically commits it."
+          }
+        }
+      },
+      "expected": {
+        "dirty": "uncommitted",
+        "rollback": "discarded"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    },
+    {
+      "id": "isolation-application",
+      "topic": "transaction-isolation",
+      "kind": "application",
+      "context": "bank-ledger",
+      "prompt": "Transaction A changes a balance but has not committed. B reads it; A then rolls back.",
+      "questions": {
+        "anomaly": {
+          "prompt": "What anomaly did B encounter?",
+          "choices": {
+            "dirty": "Dirty read.",
+            "none": "No anomaly, because A attempted a write."
+          }
+        },
+        "rely": {
+          "prompt": "May B treat that value as committed financial state?",
+          "choices": {
+            "no": "No.",
+            "yes": "Yes, reads commit other transactions."
+          }
+        }
+      },
+      "expected": {
+        "anomaly": "dirty",
+        "rely": "no"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    },
+    {
+      "id": "isolation-transfer",
+      "topic": "transaction-isolation",
+      "kind": "transfer",
+      "context": "inventory-reservation",
+      "prompt": "An inventory dashboard reads a reservation that later rolls back.",
+      "questions": {
+        "risk": {
+          "prompt": "What made the displayed reservation unreliable?",
+          "choices": {
+            "uncommitted": "It was not committed when read.",
+            "language": "It used a different programming language."
+          }
+        },
+        "policy": {
+          "prompt": "Which read policy prevents this particular dirty read?",
+          "choices": {
+            "committed": "Read only committed values.",
+            "all": "Allow all uncommitted writes."
+          }
+        }
+      },
+      "expected": {
+        "risk": "uncommitted",
+        "policy": "committed"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    },
+    {
+      "id": "search-recall",
+      "topic": "binary-search-invariant",
+      "kind": "recall",
+      "context": "definition",
+      "prompt": "Consider lower_bound on a sorted list, with a half-open interval [lo, hi).",
+      "questions": {
+        "stop": {
+          "prompt": "When is the interval empty?",
+          "choices": {
+            "equal": "lo == hi.",
+            "negative": "Only when lo is negative."
+          }
+        },
+        "mid": {
+          "prompt": "If a[mid] is below the target, what is the next lo?",
+          "choices": {
+            "after": "mid + 1.",
+            "same": "mid, even when mid == lo."
+          }
+        }
+      },
+      "expected": {
+        "stop": "equal",
+        "mid": "after"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    },
+    {
+      "id": "search-application",
+      "topic": "binary-search-invariant",
+      "kind": "application",
+      "context": "integer-array",
+      "prompt": "Find the first index with value >= 5 in [1, 3, 5, 5, 9].",
+      "questions": {
+        "index": {
+          "prompt": "Which zero-based index is correct?",
+          "choices": {
+            "two": "2.",
+            "three": "3."
+          }
+        },
+        "duplicates": {
+          "prompt": "On equality, which half-open bound moves toward the first match?",
+          "choices": {
+            "hi": "hi = mid.",
+            "lo": "lo = mid + 1."
+          }
+        }
+      },
+      "expected": {
+        "index": "two",
+        "duplicates": "hi"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    },
+    {
+      "id": "search-transfer",
+      "topic": "binary-search-invariant",
+      "kind": "transfer",
+      "context": "timestamp-log",
+      "prompt": "A sorted log has times [10, 20, 20, 40]. Find the first entry at or after time 20.",
+      "questions": {
+        "index": {
+          "prompt": "Which zero-based entry is first?",
+          "choices": {
+            "one": "1.",
+            "two": "2."
+          }
+        },
+        "missing": {
+          "prompt": "For a threshold of 50, what insertion index is returned?",
+          "choices": {
+            "length": "4, the length.",
+            "last": "3, the last existing index."
+          }
+        }
+      },
+      "expected": {
+        "index": "one",
+        "missing": "length"
+      },
+      "rubric_version": "1",
+      "evaluator_version": "exact-fields-v1"
+    }
+  ]
+}

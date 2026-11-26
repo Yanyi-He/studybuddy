@@ -47,7 +47,7 @@ def _existing_event(
     return dict(row)
 
 
-def _source_snapshot(connection: sqlite3.Connection, concept_id: str) -> str:
+def source_snapshot(connection: sqlite3.Connection, concept_id: str) -> str:
     row = connection.execute(
         "SELECT c.id AS concept_id, c.document_id, c.anchor, c.line, c.source_sha256 AS sha256, "
         "d.path, c.source_content_version AS content_version "
@@ -68,7 +68,7 @@ def append_event(connection: sqlite3.Connection, request: EventRequest) -> tuple
         existing = _existing_event(connection, request, occurred_at)
         if existing is not None:
             return existing, False
-        source = _source_snapshot(connection, request.concept_id)
+        source = source_snapshot(connection, request.concept_id)
         recorded_at = utc_now()
         event = {
             "id": "e_" + uuid4().hex,

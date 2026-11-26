@@ -1,7 +1,11 @@
 import json
 import sqlite3
+from collections import defaultdict
 
+from studybuddy.assessments import read_attempts
 from studybuddy.errors import StudyBuddyError
+from studybuddy.models import normalize_timestamp
+from studybuddy.projector import project
 
 
 def list_concepts(
@@ -44,25 +48,49 @@ def list_events(connection: sqlite3.Connection, concept_id: str | None = None) -
     return events
 
 
-def progress(connection: sqlite3.Connection) -> dict:
+def progress(connection: sqlite3.Connection, *, as_of: str | None = None) -> dict:
+    cutoff = normalize_timestamp(as_of) if as_of is not None else None
     concepts = list_concepts(connection)
     counts = {
         row["concept_id"]: row["total"]
         for row in connection.execute(
-            "SELECT concept_id, COUNT(*) AS total FROM learning_events GROUP BY concept_id"
+            "SELECT concept_id, COUNT(*) AS total FROM learning_events "
+            "WHERE (? IS NULL OR recorded_at<=?) GROUP BY concept_id",
+            (cutoff, cutoff),
         )
     }
-    gaps = [
-        {**concept, "self_reported_events": counts.get(concept["id"], 0)} for concept in concepts
+    attempts: dict[str, list[dict]] = defaultdict(list)
+    for attempt in read_attempts(connection):
+        attempts[attempt["concept_id"]].append(attempt)
+    corrections = [
+        dict(row)
+        for row in connection.execute("SELECT * FROM assessment_corrections ORDER BY sequence")
     ]
+    projected = [
+        {
+            **concept,
+            "self_reported_events": counts.get(concept["id"], 0),
+            **project(attempts[concept["id"]], corrections, as_of=cutoff),
+        }
+        for concept in concepts
+    ]
+    independent_states = {"assessed_once", "recalled_unassisted", "applied", "transferred"}
+    gaps = [item for item in projected if item["learning_state"] not in independent_states]
     return {
         "active_candidates": len(concepts),
         "awaiting_independent_assessment": len(gaps),
         "verified_mastered": 0,
-        "assessment_available": False,
+        "assessment_available": True,
+        "assessment_capability": "fixed_items_only",
+        "delayed_recall_demonstrated": sum(
+            item["learning_state"] in {"recalled_unassisted", "applied", "transferred"}
+            for item in projected
+        ),
         "explanation": (
-            "Notes and self-reported attempts show exposure, not verified mastery. "
-            "Sprint 1 does not grade or independently verify assessments."
+            "States reflect versioned fixed-item checks. Assistance is learner-declared; "
+            "free-text reasoning and general mastery are not verified. "
+            "A 24-hour retest delay is a provisional product heuristic."
         ),
         "gaps": gaps,
+        "concepts": projected,
     }

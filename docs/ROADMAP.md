@@ -33,16 +33,35 @@ Hosted CI and public releases are separate from a local pass. See `VALIDATION.md
 | Offline runtime, WAL + FTS5, parameterized SQL | Runtime socket guard, database/query tests, implementation inspection |
 | Open-source packaging and explanation | README, ADRs, CI, LICENSE, contributing guide, local wheel smoke check |
 
-## Proposed Sprint 2 — independent assessment evidence
+## Sprint 2 — attributable fixed-item assessment evidence
 
-Not implemented. Keep the first follow-up as a separate reviewable slice:
+Completed in v0.2.0. Scores verify fixed choices; assistance is learner-declared.
 
-- Add a small original assessment fixture set with explicit rubric/evaluator versions.
-- Record answers, assistance, score, source/assessment attribution, and corrections.
-- Derive conservative learning states by replaying evidence; never trust a supplied `mastered` flag.
-- Verify success, failure, assisted attempts, delayed recall, and state reversals over
-  at least 25 seeded histories. Treat any thresholds as product heuristics to evaluate.
-- Add ledger JSONL export with round-trip validation before adding external adapters.
+- [x] Nine original recall/application/transfer items over three topics, with immutable
+  rubric/evaluator snapshots and deterministic choice scoring.
+- [x] Persist answers/hashes, assistance/hints, score, topic and source attribution,
+  system-issued sessions, one-answer submissions, and append-only invalidate/restore corrections.
+- [x] Replay conservative states with supporting evidence, 24-hour recall delay,
+  application/transfer prerequisites, failed-check regression, and `--as-of` corrections.
+- [x] Exercise 32 seeded histories (acceptance minimum: 25), including success/failure,
+  assisted and AI-generated responses, early repeats, delayed recall, recovery, and reversals.
+- [x] Versioned JSONL export/restore with strict staging validation, grade recomputation,
+  preserved IDs/idempotency, tombstones, and byte-reproducible same-root round trips.
+- [x] Add schema v2 with explicit backup-first migration and rollback/backup restoration tests.
+- [x] Update bilingual documentation, full demo, changelog, ADRs, CI and installed-wheel checks.
+
+| Acceptance evidence | Location |
+| --- | --- |
+| Original versioned items | `src/studybuddy/assessment_catalog.json`, catalog/evaluator tests |
+| Atomic session/answer/correction operations | `assessments.py`, idempotency/concurrency/audit-failure tests |
+| Replay and conservative regressions | `projector.py`, `tests/fixtures/learning_histories.json`, cutoff/issuance tests |
+| Backup-first v1 upgrade | `migration.py`, `tests/test_migrations.py` |
+| JSONL domain validation and portability | `ledger.py`, corrupt/rechecksummed-forgery/round-trip tests |
+| Full offline product flow | `examples/demo.py`, socket-guard CLI integration, wheel smoke test |
+
+The local result is recorded in [VALIDATION.md](VALIDATION.md); hosted CI remains pending
+a GitHub push. `verified_mastered` stays zero because this release does not certify general
+mastery or evaluate free-text reasoning. No external adapter was added.
 
 ## Subsequent slices — not implemented
 

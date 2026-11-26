@@ -53,6 +53,89 @@ def demonstrate(database: Path) -> None:
     result = run(database, "progress", json_output=True, show=False)
     if result["verified_mastered"] != 0 or repeated["created"]:
         raise RuntimeError("Demo invariants failed")
+    demonstrate_assessments(database, concepts)
+
+
+def demonstrate_assessments(database: Path, concepts: list[dict]) -> None:
+    identifier = next(item["id"] for item in concepts if item["title"] == "Idempotency")
+    session = run(
+        database,
+        "quiz",
+        "start",
+        "--concept",
+        identifier,
+        "--assessment",
+        "retry-recall",
+        "--idempotency-key",
+        "demo-session",
+        json_output=True,
+        show=False,
+    )["session"]
+    answer = str(Path(__file__).resolve().parent / "answers" / "retry-recall.json")
+    attempt = run(
+        database,
+        "quiz",
+        "submit",
+        "--session",
+        session["id"],
+        "--answer-file",
+        answer,
+        "--assistance",
+        "independent",
+        "--idempotency-key",
+        "demo-submission",
+        json_output=True,
+        show=False,
+    )["attempt"]
+    snapshot = run(database, "progress", json_output=True, show=False)
+    state = next(
+        item["learning_state"] for item in snapshot["concepts"] if item["id"] == identifier
+    )
+    assert state == "assessed_once" and attempt["score"] == 1.0
+    print(
+        f"Synthetic fixed-item answer: score={attempt['score']}; state={state} (no delayed retest)"
+    )
+    for action, expected in [("invalidate", "exposed"), ("restore", "assessed_once")]:
+        run(
+            database,
+            "quiz",
+            "correct",
+            "--attempt",
+            attempt["id"],
+            "--action",
+            action,
+            "--reason",
+            "Synthetic demo correction",
+            "--idempotency-key",
+            "demo-" + action,
+            json_output=True,
+            show=False,
+        )
+        snapshot = run(database, "progress", json_output=True, show=False)
+        state = next(
+            item["learning_state"] for item in snapshot["concepts"] if item["id"] == identifier
+        )
+        assert state == expected
+        print(f"Append-only correction: {action} -> {state}")
+    output, restored = database.with_suffix(".ledger.jsonl"), database.with_name("restored.sqlite3")
+    run(database, "export", "--output", str(output), json_output=True, show=False)
+    run(
+        restored,
+        "import",
+        "--input",
+        str(output),
+        "--vault",
+        str(VAULT),
+        json_output=True,
+        show=False,
+    )
+    assert snapshot == run(restored, "progress", json_output=True, show=False)
+    assert run(database, "events", "list", json_output=True, show=False) == run(
+        restored, "events", "list", json_output=True, show=False
+    )
+    print("JSONL round trip: projections and event history preserved")
+    print()
+    run(database, "progress")
 
 
 if __name__ == "__main__":

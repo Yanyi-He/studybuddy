@@ -3,6 +3,7 @@
 import os
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -58,6 +59,8 @@ def check_wheel(wheel: Path) -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2:
-        raise SystemExit("Usage: python scripts/smoke_wheel.py PATH_TO_WHEEL")
-    check_wheel(Path(sys.argv[1]))
+    if len(sys.argv) > 2:
+        raise SystemExit("Usage: python scripts/smoke_wheel.py [PATH_TO_CURRENT_WHEEL]")
+    metadata = tomllib.loads((PROJECT / "pyproject.toml").read_text(encoding="utf-8"))
+    current = PROJECT / "dist" / f"studybuddy-{metadata['project']['version']}-py3-none-any.whl"
+    check_wheel(Path(sys.argv[1]) if len(sys.argv) == 2 else current)

@@ -2,6 +2,10 @@
 
 Status: accepted · 2026-11-25
 
+Sprint 2 follow-up: [ADR-005](005-fixed-item-evidence.md) implements a separate
+assessment/projector layer. The no-promotion rule for self-reports remains in force;
+the conservative Sprint 1 progress limitation below is historical context.
+
 ## Context
 
 Notes and copied answers do not demonstrate independent recall. File modification

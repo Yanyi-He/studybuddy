@@ -115,7 +115,7 @@ def test_python_module_entrypoint() -> None:
         check=False,
     )
     assert result.returncode == 0
-    assert result.stdout.strip() == "studybuddy 0.1.0"
+    assert result.stdout.strip() == "studybuddy 0.2.0"
 
 
 def test_unknown_database_format_is_not_modified(tmp_path: Path) -> None:

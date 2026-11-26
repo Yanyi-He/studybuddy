@@ -121,7 +121,8 @@ def test_self_reported_events_including_copied_ai_answers_never_imply_mastery(
         result = progress(connection)
         assert result["verified_mastered"] == 0
         assert result["awaiting_independent_assessment"] == 2
-        assert not result["assessment_available"]
+        assert result["assessment_available"]
+        assert result["assessment_capability"] == "fixed_items_only"
         assert {item["status"] for item in list_concepts(connection)} == {"seen"}
 
 

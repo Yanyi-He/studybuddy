@@ -11,8 +11,11 @@ from studybuddy.database import default_database, open_database
 from studybuddy.errors import StudyBuddyError
 from studybuddy.events import EventRequest, append_event
 from studybuddy.indexer import index_vault
+from studybuddy.ledger import export_ledger, import_ledger
+from studybuddy.migration import migrate_database
 from studybuddy.models import EventKind
 from studybuddy.queries import list_concepts, list_events, progress
+from studybuddy.quiz_cli import dispatch_quiz, quiz_without_database, register_quiz
 from studybuddy.vault import scan_vault, validate_vault
 
 
@@ -57,9 +60,28 @@ def build_parser() -> argparse.ArgumentParser:
     listing = event_commands.add_parser("list")
     listing.add_argument("--concept")
     _output_options(listing)
-    _output_options(
-        commands.add_parser("progress", help="Find exposure without verified assessment.")
+    progress_parser = commands.add_parser("progress", help="Replay fixed-item assessment evidence.")
+    progress_parser.add_argument(
+        "--as-of", help="Replay evidence recorded on/before this timezone-aware time."
     )
+    _output_options(progress_parser)
+    register_quiz(commands)
+    migration = commands.add_parser(
+        "migrate", help="Upgrade schema after making a new SQLite backup."
+    )
+    migration.add_argument("--backup", type=Path, required=True)
+    _output_options(migration)
+    exporting = commands.add_parser(
+        "export", help="Export a consistent logical JSONL ledger snapshot."
+    )
+    exporting.add_argument("--output", type=Path, required=True)
+    _output_options(exporting)
+    importing = commands.add_parser(
+        "import", help="Restore validated JSONL into a new database, never merge."
+    )
+    importing.add_argument("--input", type=Path, required=True)
+    importing.add_argument("--vault", type=Path, required=True)
+    _output_options(importing)
     return parser
 
 
@@ -73,14 +95,26 @@ def dispatch(args: argparse.Namespace) -> Any:
         }
     if args.command == "index":
         return asdict(index_vault(args.vault, args.db))
-    writable = args.command == "events" and args.event_command == "add"
+    if args.command == "migrate":
+        return migrate_database(args.db, args.backup)
+    if args.command == "export":
+        return export_ledger(args.db, args.output)
+    if args.command == "import":
+        return import_ledger(args.db, args.input, args.vault)
+    if args.command == "quiz" and args.quiz_command in {"list", "show"}:
+        return quiz_without_database(args)
+    writable = (args.command == "events" and args.event_command == "add") or (
+        args.command == "quiz" and args.quiz_command in {"start", "submit", "correct"}
+    )
     with open_database(args.db, writable=writable) as connection:
         if args.command == "concepts":
             return list_concepts(
                 connection, include_inactive=args.include_inactive, search=args.search
             )
         if args.command == "progress":
-            return progress(connection)
+            return progress(connection, as_of=args.as_of)
+        if args.command == "quiz":
+            return dispatch_quiz(connection, args)
         if args.event_command == "list":
             return list_events(connection, args.concept)
         event, created = append_event(
@@ -112,10 +146,14 @@ def render_text(command: str, result: Any) -> str:
         lines = [
             f"{result['active_candidates']} active concept candidates",
             f"{result['awaiting_independent_assessment']} awaiting independent assessment",
-            "0 verified mastered (assessment evaluator is not implemented in Sprint 1)",
+            f"{result['delayed_recall_demonstrated']} with delayed fixed-item recall evidence",
+            "0 verified mastered (fixed-item checks do not certify general mastery)",
             result["explanation"],
         ]
-        lines.extend(_concept_line(item) for item in result["gaps"])
+        lines.extend(
+            _concept_line(item) + f"  learning_state={item['learning_state']}"
+            for item in result["concepts"]
+        )
         return "\n".join(lines)
     return json.dumps(result, ensure_ascii=True, indent=2)
 

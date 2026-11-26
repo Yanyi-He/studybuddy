@@ -11,7 +11,7 @@ from studybuddy.errors import StudyBuddyError
 from studybuddy.models import utc_now
 from studybuddy.vault import validate_database_location
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 APPLICATION_ID = 0x53544259
 
 
@@ -62,6 +62,8 @@ def _initialize(connection: sqlite3.Connection) -> None:
             raise StudyBuddyError("Refusing to initialize a database owned by another application.")
         schema = files("studybuddy").joinpath("schema.sql").read_text(encoding="utf-8")
         _execute_schema(connection, schema)
+        migration = files("studybuddy").joinpath("migrations/002-assessments.sql")
+        _execute_schema(connection, migration.read_text(encoding="utf-8"))
         connection.execute(f"PRAGMA application_id = {APPLICATION_ID}")
         connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
@@ -69,6 +71,11 @@ def _initialize(connection: sqlite3.Connection) -> None:
 def _verify_schema(connection: sqlite3.Connection) -> None:
     app_id = connection.execute("PRAGMA application_id").fetchone()[0]
     version = connection.execute("PRAGMA user_version").fetchone()[0]
+    if app_id == APPLICATION_ID and version == 1:
+        raise StudyBuddyError(
+            "Schema v1 needs an explicit upgrade: "
+            "studybuddy --db PATH migrate --backup BACKUP_PATH."
+        )
     if app_id != APPLICATION_ID or version != SCHEMA_VERSION:
         raise StudyBuddyError(
             "Unsupported database format/version; no automatic migration attempted."

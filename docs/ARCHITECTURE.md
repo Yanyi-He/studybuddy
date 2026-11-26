@@ -1,148 +1,174 @@
-# Implemented architecture — Sprint 1
+# Implemented architecture — Sprints 1–2
 
-This document describes shipped code. The broader product sketches are in
-`vision/` and do not imply that an assessment, scheduler, server, or UI exists.
+This describes v0.2.0. `vision/` contains future product sketches; MCP, scheduling,
+frontend, LLM grading, and code execution are not shipped.
 
-## Boundaries
+## Boundaries and ownership
 
 ```mermaid
 flowchart LR
-    CLI[Explicit CLI invocation] --> V[Vault validation and scoped reads]
-    V --> P[Bounded Markdown/YAML extraction]
-    P --> I[Incremental reconciliation]
-    I --> DB[(SQLite: index + FTS5 + ledger + audit)]
-    CLI --> E[Validated append-once event]
-    E --> DB
-    DB --> Q[Conservative progress queries]
-    Q --> CLI
+    C[Explicit offline CLI] --> V[Scoped read-only vault]
+    V --> I[Bounded extraction and reconciliation]
+    I --> D[(SQLite index + ledger + audit)]
+    C --> A[Versioned fixed-item evaluator]
+    A --> D
+    D --> P[Replayable evidence projector]
+    P --> C
+    D --> E[Read snapshot JSONL export]
+    E --> R[Strict in-memory restore validation]
+    R --> N[(New external database)]
 ```
 
-The vault owns authored Markdown. StudyBuddy owns an index derived from selected
-metadata and an append-only application API for self-reported learning events.
-The runtime has no network integration or note/code execution path. A future
-write-capable MCP adapter must authorize on the server; CLI invocation is the
-explicit authority for today's local mutations.
+The vault owns authored Markdown. StudyBuddy owns computed source metadata and
+application-level append-only learning/assessment records. Local CLI invocation is
+explicit authority for mutations, which validate inputs and audit in the same
+transaction. There is no server authorization layer; future write-capable adapters
+must enforce authorization themselves. Source text and imported files are inert data.
 
-## Storage
+## Schema v2
 
-`schema.sql` initializes format version 1 and an application ID. An unrelated or
-newer database is rejected instead of being silently adopted. There are no schema
-upgrades yet. SQLite uses foreign keys, WAL, `synchronous=FULL`, and a 5-second busy
-timeout. Values are bound through parameters; dynamic SQL clauses are fixed code.
+`schema.sql` preserves the original v1 baseline. `migrations/002-assessments.sql` adds
+v2 tables; fresh initialization applies both atomically. The application ID and schema
+version are checked on every open. v1 reads/writes reject with an actionable migration
+command. `migrate --backup` is explicit, integrity-checks a new backup, and atomically
+commits DDL, version, and audit. Unknown formats/versions are refused.
 
-| Table | Ownership and meaning |
+SQLite uses foreign keys, WAL, `synchronous=FULL`, and a 5-second busy timeout. Read
+commands open with `mode=ro` and `query_only`; values use bound parameters. Output files
+are created exclusively with mode `0600`, and new parent directories request `0700`.
+Existing directory permissions are not changed. Restored DBs also use WAL.
+
+| Table | Meaning |
 | --- | --- |
-| `settings` | One canonical `vault_root` per database |
-| `documents` | Persistent document identity, unique relative path, latest hash/version, metadata, tombstone |
-| `concepts` | Per-document heading candidates, `seen`, provenance, first discovery and current indexing time |
-| `wikilinks` | Parsed targets, aliases, anchors, and lines; never followed to read arbitrary files |
-| `concept_search` | Rebuildable FTS5 view of active heading titles, paths, and anchors |
-| `learning_events` | Caller-supplied observations, unique keys, source snapshots, two distinct timestamps |
-| `audit_log` | Successful vault binding, changed-index summaries, and newly appended events |
+| `settings` | One canonical, explicitly selected vault root |
+| `documents` | Current source identity/path/hash/version/metadata and deletion tombstone |
+| `concepts` | Heading candidates; `seen` and `candidate` remain source properties |
+| `wikilinks` / `concept_search` | Inert links and rebuildable active-title/path FTS5 index |
+| `learning_events` | Self-reports, unique keys, occurred/recorded timestamps, source snapshots |
+| `assessment_sessions` | Explicit concept/topic mapping, exact item/rubric snapshot/hash, issuance time |
+| `assessment_attempts` | One answer per session, answer/hash, computed grade, assistance/hints, submission time |
+| `assessment_corrections` | Ordered invalidate/restore records with reasons and replay keys |
+| `audit_log` | Atomic mutation audit; excluded from logical JSONL exports |
 
-Note bodies are never persisted, but full frontmatter, headings, and links are.
-The database is local and private metadata is not anonymized or encrypted.
-Queries open the database in read-only mode. `doctor` never opens a database.
-An unchanged index or event replay does not append a mutation audit entry.
+Note bodies are not stored. Frontmatter, headings, links, absolute root, source hashes,
+timestamps, self-reports, answers, and corrections remain private unencrypted data.
 
-## Five decisions and their pitfalls
+## Source reconciliation
 
-1. **One indexing transaction per scan.** `BEGIN IMMEDIATE` serializes writers
-   before the existing index is inspected. Bind, source updates, candidate updates,
-   FTS, tombstones, and audit either commit together or roll back together. This
-   favors correctness for small local vaults; it holds a write lock during reads and
-   can delay event recording. A failing scan must not produce mass tombstones.
-   If measurements show unacceptable lock duration, stage file snapshots and
-   revalidate an index generation before applying bounded batches. Schema statements
-   are executed individually because `executescript()` can implicitly commit.
-2. **Idempotency includes semantic conflict checks.** A unique key and the event
-   are committed together with audit. A replay returns the original event only
-   when concept, kind, and any explicitly supplied normalized time agree. When
-   time is omitted, replay uses the original time rather than generating a conflict
-   from a new clock reading. This is a local database guarantee, not a distributed
-   exactly-once claim.
-3. **File mtime is not learning time.** `source_mtime_ns` is observed alongside
-   the content version; hash changes increment `content_version`. Touching unchanged
-   bytes does not update the logical index or create events. `occurred_at` is an
-   explicit timezone-aware user report normalized to UTC; `recorded_at` is the
-   system's insertion time. Neither proves how long somebody studied.
-4. **Provenance outlives the source.** Candidate IDs use document ID plus heading
-   text and occurrence number. Body edits keep unchanged headings' IDs. Events
-   snapshot document ID, path, anchor, line, content hash, and version at insertion.
-   A rename updates current paths, while existing event snapshots retain old ones.
-   A deletion retires candidates and removes active search entries without deleting
-   historical events. The index is not a complete archive of old note contents.
-5. **Validate at the filesystem boundary.** The database is checked to be outside
-   the chosen vault before indexing. Reads reject absolute paths, `..`, hidden path
-   components, backslashes, and NULs. Each component is opened relative to a directory
-   descriptor with `O_NOFOLLOW`, so checking `resolve()` and then following a swapped
-   symlink is avoided. All symlinks are skipped, including internal ones. macOS/Linux
-   support is intentional; a Windows adapter needs equivalent guarantees and tests.
+Indexing runs one `BEGIN IMMEDIATE` transaction per complete scan, serializing writers
+before reading the old index. All source/candidate/FTS/tombstone/audit changes roll back
+together on failure. This favors small-vault consistency over short writer-lock time.
+Every visible Markdown file is hashed; only changed/restored files are parsed again.
+Touching unchanged bytes creates neither a new content version nor a learning event.
 
-## Reconciliation rules
+A one-to-one identical-hash pair among missing/new paths is a rename heuristic that
+preserves document identity. Ambiguous duplicates and rename+edit become deletion and
+addition. Source deletion retires candidates and removes search entries, preserving
+historical events and assessment snapshots. Heading identity is document ID + text +
+duplicate occurrence number; renaming/reordering identical headings may change identity.
+There is no concept confirmation/merging or graph in this slice.
 
-Every scan reads and hashes visible Markdown, but only changed or restored sources
-are reparsed. Candidates without headings fall back to frontmatter title or filename.
-ATX/Setext headings are extracted outside fenced code and HTML comments; Wikilinks
-inside inline/indented code are ignored. This is not a complete Markdown AST.
+Reads reject absolute/traversal/hidden/NUL/backslash paths and open each component using
+relative directory descriptors with `O_NOFOLLOW`. All symlinks are skipped. Notes must
+be regular UTF-8 files ≤2 MiB. File size/mtime changes during a read cause rejection;
+there is no filesystem-wide snapshot. Unreadable/oversized/invalid-encoding files abort
+the scan so missing sources are not falsely tombstoned.
 
-An identical-hash one-to-one pair among missing and new paths retains document
-identity. This is a conservative heuristic, not proof of a filesystem rename.
-Ambiguous duplicate matches and rename+edit become deletion+addition. Restoring a
-previous path reactivates its document. Each source remains separate; no automatic
-cross-document concept merging, user confirmation, or prerequisite graph is shipped.
-Renaming a heading creates another candidate. Reordering identical headings can
-change their occurrence identity; line numbers distinguish duplicate source spans.
+ATX/Setext headings exclude fences/comments, Wikilinks in code are ignored, and a
+file-level candidate is used without headings. This is not complete CommonMark.
+YAML uses bounded SafeLoader: ≤64 KiB, 2,048 nodes, 24 levels, no aliases. Malformed
+frontmatter produces `{}` and a content-free warning; unclosed frontmatter falls
+back to the filename. `unicode61` does not provide Chinese substring segmentation.
 
-Invalid frontmatter is stored as `{}` with a generic warning; body extraction can
-continue after a closing delimiter. Unclosed frontmatter uses a file-level candidate.
-SafeLoader is further bounded to 64 KiB of YAML, 2,048 nodes, 24 levels, and no aliases.
-The note limit is 2 MiB. A read/encoding/size failure rolls back reconciliation.
-Files changing during a read are rejected when their size/mtime changes. There is
-no filesystem-wide snapshot: concurrent user edits may require another scan.
+## Assessment lifecycle
 
-## Evidence semantics
+1. `quiz list/show` exposes original prompts and choice keys without opening a DB.
+2. `quiz start` validates an active concept and snapshots the known catalog item,
+   exact rubric, evaluator, source path/anchor/line/hash/version, and system issuance
+   timestamp. The first chosen topic binds that concept; later unrelated topics fail.
+3. `quiz submit` accepts one structured answer, explicit assistance, and hint count.
+   Scores are computed by `exact-fields-v1`: all fields correct is a pass; partially
+   correct responses receive a fractional score and fail. Optional explanations are stored,
+   explicitly not graded. No caller-supplied score/evaluator/mastery flag is accepted.
+4. `quiz correct` appends invalidate/restore with a reason. Restore requires an active
+   invalidation. Neither answers nor grades are overwritten. Every new operation and
+   its audit commit atomically; identical retries return the existing operation.
 
-All six event kinds are `self_reported`, including recall, practice, and transfer
-attempts. They cannot set mastery. The schema constrains candidate status to `seen`;
-the progress response explicitly advertises `assessment_available=false` and
-`verified_mastered=0`. These are deliberate Sprint 1 limits, not fake assessment logic.
+Submission time is system-recorded and cannot be backdated through the CLI. Historical
+self-report `occurred_at` remains separate from insertion time. Tests inject a synthetic
+clock; the product has no fake-time switch. The real local clock and declared assistance
+are not externally witnessed. Answer keys are public in the source package, so this is
+not a cheat-resistant exam. The fixed topics do not establish production coding skill.
 
-An independent assessment system must add attributable outcomes, independence/hints,
-rubric and evaluator versions, and replayable state derivation. It must preserve
-failed outcomes and support corrections instead of overwriting a learned flag.
-See [ADR-003](adr/003-event-ledger.md) and the [roadmap](ROADMAP.md).
+Sessions can still receive a historical result after their source disappears, but that
+concept is omitted from the current active progress view. Stored provenance stays intact.
 
-## Ownership, backup, and deletion
+## Replay contract
 
-The default database is under XDG data home (or `~/.local/share`); `--db` can choose
-another external file. Newly created database files use mode `0600`; newly created
-parent directories request `0700`. Existing directory permissions are not changed.
-Your OS account controls local access; the application is not an OS security sandbox.
+`progress` re-evaluates stored answer/rubric consistency and calls the pure projector.
+There is no mutable mastery table or cache. `status=seen` remains distinct from
+`learning_state`. `fixed-evidence-v1` applies these product heuristics:
 
-Use SQLite's `Connection.backup()` for a consistent ledger backup. Example, from the
-repository root after commands have finished:
+- Correct assisted/AI-assisted responses can support only `answered_with_help`.
+- A correct declared-independent response supports `assessed_once`.
+- Two independent recall passes support `recalled_unassisted` only when the second
+  session was issued at least 24 hours after the first submission.
+- A subsequently issued independent application pass supports `applied`.
+- A later independent transfer pass in a different context supports `transferred`.
+- Any active failed check clears the chain to `needs_review`. Assisted success cannot
+  upgrade an established independent state. Earlier application/transfer attempts are
+  not retroactively promoted after prerequisites become satisfied.
 
-```python
-import sqlite3
+Corrections are applied in recorded sequence, then active attempts are replayed in
+submission order with ID tie-breaking. Invalidation can remove both positive and
+negative evidence; restoration reuses the original grade. `--as-of` filters by recorded
+time and applies only corrections known at that cutoff. Source availability still uses
+today's active index, so this is evidence replay, not vault time travel.
 
-with sqlite3.connect("file:.local/study.sqlite3?mode=ro", uri=True) as source:
-    with sqlite3.connect(".local/study-backup.sqlite3") as destination:
-        source.backup(destination)
-```
+Responses expose supporting/invalidated attempt IDs, last assessment time, topic,
+projector version, cutoff, delay, and the learner-declared independence boundary.
+`verified_mastered` remains zero: broad mastery is not certified. This keeps v0.1 JSON
+consumers conservative while adding meaningful fixed-item evidence and gap counts.
 
-Restoring means selecting a copy of that backup with `--db` at the same vault root;
-the root binding is retained. Vault relocation is not automated. Stop commands before
-deleting the chosen database and its `-wal`/`-shm` files. This deletes all local events,
-candidates, metadata, and audit history without writing to the vault. No event
-export/import or selective deletion CLI is provided in this slice.
+## JSONL portability and restore
 
-## Primary implementation references
+Format v1 is manifest → typed records → count/SHA-256 trailer, targeting schema v2.
+Export pins a read transaction and serializes records in deterministic order. It includes
+source contexts and learning/assessment history; operational audit and FTS are omitted.
+Same-root export/import/export reproduces the bytes and evidence projection.
 
-- [Python 3.12 sqlite3 transaction control](https://docs.python.org/3.12/library/sqlite3.html#transaction-control)
-- [SQLite synchronous settings](https://www.sqlite.org/pragma.html#pragma_synchronous)
-- [PyYAML safe loading](https://pyyaml.org/wiki/PyYAMLDocumentation)
-- [uv's GitHub Actions integration](https://docs.astral.sh/uv/guides/integration/github/)
+Import requires a new target and an explicitly selected existing vault root. The
+manifest's root is informational, never authorization. A ≤64 MiB file is parsed with
+strict JSON: no duplicate keys, non-finite numbers, unknown fields, executable SQL,
+or unrecognized table names. Type/constraint/reference/path/time/source/topic/correction
+checks run in an in-memory staging DB. Every item must match the known immutable
+snapshot; every stored grade is recomputed. Only then are root binding, reconstructed
+FTS, and a new import audit committed into a new DB. No existing ledger is merged.
 
-The current implementation uses PyYAML as a dependency; no referenced tutor application's
-source code or vocabulary datasets have been copied into the project.
+A checksum detects corruption, not authenticity. A user can control their answer history
+and assistance declarations; import does not turn that into external attestation.
+The current format requires known bundled item/evaluator versions. Future releases
+must preserve those definitions or supply an explicit compatibility migration.
+
+## Backup, ownership, and decisions
+
+JSONL is a logical portability format, not an operational audit backup. For a complete
+snapshot use `sqlite3.Connection.backup()`. `migrate` uses a separate reader while a
+writer reservation protects the old schema; backing up the active writer itself may
+wait on its transaction. Migration tests restore and re-migrate the v1 backup and
+inject an audit failure to verify DDL rollback.
+
+Stop commands before deleting a chosen database and its SQLite sidecars; history is
+not reconstructable from notes. Deleting StudyBuddy data does not write to the vault.
+No selective deletion CLI or encryption is supplied.
+
+The original five concerns remain: transaction boundaries, semantic idempotency,
+mtime versus learning time, historical source provenance, and scoped filesystem access.
+See [read-only sources](adr/001-read-only-source.md), [SQLite](adr/002-sqlite-atomic-index.md),
+[event semantics](adr/003-event-ledger.md), [migration](adr/004-backup-first-migration.md),
+[fixed-item evidence](adr/005-fixed-item-evidence.md), and [JSONL](adr/006-jsonl-portability.md)
+for context, alternatives, and revisit triggers.
+
+Primary references: [Python sqlite3](https://docs.python.org/3.12/library/sqlite3.html),
+[SQLite backup](https://www.sqlite.org/backup.html), [PyYAML](https://pyyaml.org/wiki/PyYAMLDocumentation),
+[uv CI integration](https://docs.astral.sh/uv/guides/integration/github/).
